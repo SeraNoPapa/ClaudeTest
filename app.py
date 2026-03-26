@@ -16,7 +16,14 @@ st.set_page_config(
     page_icon="₿",
 )
 
-SYMBOL = "BTC/USDT"
+COINS = [
+    "BTC/USDT", "ETH/USDT", "XRP/USDT", "SOL/USDT",
+    "BNB/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
+]
+PLOTLY_CONFIG = {
+    "modeBarButtonsToAdd": ["drawline", "drawopenpath", "drawrect", "eraseshape"],
+    "scrollZoom": True,
+}
 FIB_COLORS = {
     "0.0%":   "#888888",
     "23.6%":  "#FFA500",
@@ -29,13 +36,13 @@ FIB_COLORS = {
 # ─── キャッシュ付きデータ取得 ──────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def get_data(timeframe: str, limit: int):
-    return indicators.fetch_ohlcv_df(SYMBOL, timeframe, limit=limit)
+def get_data(symbol: str, timeframe: str, limit: int):
+    return indicators.fetch_ohlcv_df(symbol, timeframe, limit=limit)
 
 
 @st.cache_data(ttl=3600)
-def get_mayer_data():
-    df = indicators.fetch_ohlcv_since_year(SYMBOL, "1d", 2018)
+def get_mayer_data(symbol: str):
+    df = indicators.fetch_ohlcv_since_year(symbol, "1d", 2018)
     return indicators.calc_mayer_multiple(df)
 
 
@@ -44,9 +51,18 @@ def get_usdjpy():
     return indicators.get_usdjpy_rate()
 
 
+# ─── セッション状態初期化 ───────────────────────────────────────────────────────
+if "hlines" not in st.session_state:
+    st.session_state.hlines = []    # [{"price": float, "color": str, "label": str}]
+if "channels" not in st.session_state:
+    st.session_state.channels = []  # [{"upper": float, "lower": float, "color": str, "label": str}]
+
+
 # ─── サイドバー ────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("₿ BTC/USDT")
+    st.title("⚙️ 設定")
+    symbol = st.selectbox("銘柄", COINS, index=0)
+    st.divider()
 
     st.subheader("データ設定")
     timeframe = st.selectbox(
@@ -83,17 +99,62 @@ with st.sidebar:
     show_adx   = st.checkbox("ADX / DMI",      value=False)
 
     st.subheader("その他")
-    show_mayer = st.checkbox("メイヤーマルチプル（2018年〜）", value=False)
+    if symbol == "BTC/USDT":
+        show_mayer = st.checkbox("メイヤーマルチプル（2018年〜）", value=False)
+    else:
+        show_mayer = False
     show_jpy   = st.checkbox("JPY表示", value=False)
 
     if st.button("Refresh Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
+    st.divider()
+    st.subheader("✏️ ライン管理")
+
+    with st.expander("水平線を追加"):
+        hl_price = st.number_input("価格", min_value=0.0, format="%.4f", key="hl_price_input")
+        hl_color = st.color_picker("色", value="#FF4B4B", key="hl_color_input")
+        hl_label = st.text_input("ラベル (任意)", key="hl_label_input")
+        if st.button("追加", key="hl_add"):
+            st.session_state.hlines.append({"price": hl_price, "color": hl_color, "label": hl_label})
+
+    with st.expander("チャンネルを追加"):
+        ch_upper = st.number_input("上限価格", min_value=0.0, format="%.4f", key="ch_upper_input")
+        ch_lower = st.number_input("下限価格", min_value=0.0, format="%.4f", key="ch_lower_input")
+        ch_color = st.color_picker("色", value="#4B9FFF", key="ch_color_input")
+        ch_label = st.text_input("ラベル (任意)", key="ch_label_input")
+        if st.button("追加", key="ch_add"):
+            st.session_state.channels.append({"upper": ch_upper, "lower": ch_lower, "color": ch_color, "label": ch_label})
+
+    if st.session_state.hlines or st.session_state.channels:
+        st.markdown("**登録済みライン**")
+        for i, hl in enumerate(st.session_state.hlines):
+            col_l, col_d = st.columns([4, 1])
+            col_l.markdown(
+                f"<span style='color:{hl['color']}'>━</span> "
+                f"{hl['label'] or '水平線'} @ {hl['price']:.4f}",
+                unsafe_allow_html=True,
+            )
+            if col_d.button("✕", key=f"del_hl_{i}"):
+                st.session_state.hlines.pop(i)
+                st.rerun()
+        for i, ch in enumerate(st.session_state.channels):
+            col_l, col_d = st.columns([4, 1])
+            col_l.markdown(
+                f"<span style='color:{ch['color']}'>▬</span> "
+                f"{ch['label'] or 'チャンネル'} "
+                f"{ch['lower']:.4f} – {ch['upper']:.4f}",
+                unsafe_allow_html=True,
+            )
+            if col_d.button("✕", key=f"del_ch_{i}"):
+                st.session_state.channels.pop(i)
+                st.rerun()
+
 
 # ─── データ取得・インジケーター計算 ────────────────────────────────────────────
 try:
-    df_raw = get_data(timeframe, limit)
+    df_raw = get_data(symbol, timeframe, limit)
 except Exception as e:
     st.error(f"データ取得エラー: {e}")
     st.stop()
@@ -133,7 +194,7 @@ if show_jpy and usdjpy:
     price_label += f"  /  ¥{current_price * usdjpy:,.0f}"
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("現在価格 (BTC/USDT)", price_label)
+col1.metric(f"現在価格 ({symbol})", price_label)
 col2.metric("前足比", f"{price_change:+.2f}%")
 col3.metric("USD/JPY", f"¥{usdjpy}" if usdjpy else "取得失敗")
 col4.metric("直近高値", f"${df['high'].max():,.2f}")
@@ -175,7 +236,7 @@ fig.add_trace(
         x=df.index,
         open=df["open"], high=df["high"],
         low=df["low"],   close=df["close"],
-        name="BTC/USDT",
+        name=symbol,
         increasing_line_color="#26a69a",
         decreasing_line_color="#ef5350",
     ),
@@ -358,7 +419,7 @@ fig.update_layout(
     legend=dict(orientation="h", y=1.02, x=0),
     margin=dict(l=60, r=40, t=60, b=40),
     title=dict(
-        text=f"BTC/USDT  {timeframe}  ({limit}本)",
+        text=f"{symbol}  {timeframe}  ({limit}本)",
         font=dict(size=16),
     ),
 )
@@ -369,7 +430,34 @@ if timeframe in ("1d", "1w", "1M"):
         rangebreaks=[dict(bounds=["sat", "mon"])]
     )
 
-st.plotly_chart(fig, use_container_width=True)
+# ── ユーザー定義ライン ──────────────────────────────────────────────────────────
+for hl in st.session_state.hlines:
+    fig.add_hline(
+        y=hl["price"],
+        line_color=hl["color"],
+        line_width=1.5,
+        line_dash="dot",
+        annotation_text=hl["label"] if hl["label"] else None,
+        annotation_position="top right",
+    )
+
+for ch in st.session_state.channels:
+    fig.add_hrect(
+        y0=ch["lower"], y1=ch["upper"],
+        fillcolor=ch["color"], opacity=0.08, line_width=0,
+    )
+    fig.add_hline(
+        y=ch["upper"], line_color=ch["color"], line_width=1, line_dash="dash",
+        annotation_text=(ch["label"] + " 上限") if ch["label"] else None,
+        annotation_position="top right",
+    )
+    fig.add_hline(
+        y=ch["lower"], line_color=ch["color"], line_width=1, line_dash="dash",
+        annotation_text=(ch["label"] + " 下限") if ch["label"] else None,
+        annotation_position="bottom right",
+    )
+
+st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 st.caption(f"データ最終時刻: {df.index[-1].strftime('%Y-%m-%d %H:%M UTC')}")
 
 
@@ -378,7 +466,7 @@ if show_mayer:
     with st.expander("メイヤーマルチプル（2018年〜）", expanded=True):
         with st.spinner("2018年〜のデータを取得中..."):
             try:
-                df_m = get_mayer_data()
+                df_m = get_mayer_data(symbol)
             except Exception as e:
                 st.error(f"データ取得エラー: {e}")
                 st.stop()
