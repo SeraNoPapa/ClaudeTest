@@ -1,0 +1,12 @@
+# --- Python用 ---
+__pycache__/
+*.pyc
+.venv/
+
+# --- C# / Visual Studio用 ---
+bin/
+obj/
+*.exe
+*.dll
+.vs/
+App.config  # 環境によって変えたい設定ファイルなど
