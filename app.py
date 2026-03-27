@@ -20,8 +20,14 @@ COINS = [
     "BTC/USDT", "ETH/USDT", "XRP/USDT", "SOL/USDT",
     "BNB/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
 ]
+REFERENCE_ASSETS = {
+    "日経225":  {"symbol": "^N225",  "currency": "JPY"},
+    "S&P 500": {"symbol": "^GSPC",  "currency": "USD"},
+    "USD/JPY": {"symbol": "JPY=X",  "currency": "JPY"},
+    "Gold":    {"symbol": "GC=F",   "currency": "USD"},
+}
 PLOTLY_CONFIG = {
-    "modeBarButtonsToAdd": ["drawline", "drawopenpath", "drawrect", "eraseshape"],
+    "modeBarButtonsToAdd": ["drawline", "drawrect", "eraseshape"],
     "scrollZoom": True,
 }
 FIB_COLORS = {
@@ -51,11 +57,14 @@ def get_usdjpy():
     return indicators.get_usdjpy_rate()
 
 
+@st.cache_data(ttl=600)
+def get_reference_data(symbol: str, period: str, interval: str = "1d"):
+    return indicators.fetch_yahoo_ohlcv(symbol, period, interval)
+
+
 # ─── セッション状態初期化 ───────────────────────────────────────────────────────
-if "hlines" not in st.session_state:
-    st.session_state.hlines = []    # [{"price": float, "color": str, "label": str}]
-if "channels" not in st.session_state:
-    st.session_state.channels = []  # [{"upper": float, "lower": float, "color": str, "label": str}]
+if "drawings" not in st.session_state:
+    st.session_state.drawings = []  # [{"type": str, "params": dict, "color": str, "label": str}]
 
 
 # ─── サイドバー ────────────────────────────────────────────────────────────────
@@ -105,50 +114,109 @@ with st.sidebar:
         show_mayer = False
     show_jpy   = st.checkbox("JPY表示", value=False)
 
-    if st.button("Refresh Data", use_container_width=True):
+    st.subheader("参照アセット")
+    ref_selected = []
+    for name in REFERENCE_ASSETS:
+        if st.checkbox(name, value=False, key=f"ref_{name}"):
+            ref_selected.append(name)
+    ref_period = st.selectbox(
+        "期間", ["1mo", "3mo", "6mo", "1y"], index=2, key="ref_period",
+    ) if ref_selected else "6mo"
+
+    if st.button("データ更新", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
     st.divider()
-    st.subheader("✏️ ライン管理")
+    st.subheader("描画ツール")
+    st.caption("ツールバーのペンでトレンドライン描画（一時的）")
 
-    with st.expander("水平線を追加"):
-        hl_price = st.number_input("価格", min_value=0.0, format="%.4f", key="hl_price_input")
-        hl_color = st.color_picker("色", value="#FF4B4B", key="hl_color_input")
-        hl_label = st.text_input("ラベル (任意)", key="hl_label_input")
-        if st.button("追加", key="hl_add"):
-            st.session_state.hlines.append({"price": hl_price, "color": hl_color, "label": hl_label})
+    draw_type = st.selectbox(
+        "描画タイプ",
+        ["水平ライン", "トレンドライン", "並行チャネル", "ピッチフォーク"],
+        key="draw_type",
+    )
+    draw_color = st.color_picker("線の色", value="#FF4B4B", key="draw_color")
+    draw_label = st.text_input("ラベル (任意)", key="draw_label")
 
-    with st.expander("チャンネルを追加"):
-        ch_upper = st.number_input("上限価格", min_value=0.0, format="%.4f", key="ch_upper_input")
-        ch_lower = st.number_input("下限価格", min_value=0.0, format="%.4f", key="ch_lower_input")
-        ch_color = st.color_picker("色", value="#4B9FFF", key="ch_color_input")
-        ch_label = st.text_input("ラベル (任意)", key="ch_label_input")
-        if st.button("追加", key="ch_add"):
-            st.session_state.channels.append({"upper": ch_upper, "lower": ch_lower, "color": ch_color, "label": ch_label})
+    if draw_type == "水平ライン":
+        hl_price = st.number_input("価格", min_value=0.0, format="%.2f", key="draw_hl_price")
+        if st.button("追加", key="draw_add"):
+            st.session_state.drawings.append({
+                "type": "hline", "color": draw_color, "label": draw_label,
+                "params": {"price": hl_price},
+            })
+            st.rerun()
 
-    if st.session_state.hlines or st.session_state.channels:
-        st.markdown("**登録済みライン**")
-        for i, hl in enumerate(st.session_state.hlines):
+    elif draw_type == "トレンドライン":
+        st.caption("開始点と終了点の日時・価格を入力")
+        tl_start_date = st.date_input("開始日", key="draw_tl_sd")
+        tl_start_time = st.time_input("開始時刻", key="draw_tl_st")
+        tl_start_price = st.number_input("開始価格", min_value=0.0, format="%.2f", key="draw_tl_sp")
+        tl_end_date = st.date_input("終了日", key="draw_tl_ed")
+        tl_end_time = st.time_input("終了時刻", key="draw_tl_et")
+        tl_end_price = st.number_input("終了価格", min_value=0.0, format="%.2f", key="draw_tl_ep")
+        if st.button("追加", key="draw_add"):
+            st.session_state.drawings.append({
+                "type": "trendline", "color": draw_color, "label": draw_label,
+                "params": {
+                    "x0": datetime.datetime.combine(tl_start_date, tl_start_time).isoformat(),
+                    "y0": tl_start_price,
+                    "x1": datetime.datetime.combine(tl_end_date, tl_end_time).isoformat(),
+                    "y1": tl_end_price,
+                },
+            })
+            st.rerun()
+
+    elif draw_type == "並行チャネル":
+        ch_upper = st.number_input("上限価格", min_value=0.0, format="%.2f", key="draw_ch_upper")
+        ch_lower = st.number_input("下限価格", min_value=0.0, format="%.2f", key="draw_ch_lower")
+        if st.button("追加", key="draw_add"):
+            st.session_state.drawings.append({
+                "type": "channel", "color": draw_color, "label": draw_label,
+                "params": {"upper": ch_upper, "lower": ch_lower},
+            })
+            st.rerun()
+
+    elif draw_type == "ピッチフォーク":
+        st.caption("ピボット(P)、翼A、翼Bの3点を入力")
+        pf_p_date = st.date_input("P 日付", key="draw_pf_pd")
+        pf_p_time = st.time_input("P 時刻", key="draw_pf_pt")
+        pf_p_price = st.number_input("P 価格", min_value=0.0, format="%.2f", key="draw_pf_pp")
+        pf_a_date = st.date_input("A 日付", key="draw_pf_ad")
+        pf_a_time = st.time_input("A 時刻", key="draw_pf_at")
+        pf_a_price = st.number_input("A 価格", min_value=0.0, format="%.2f", key="draw_pf_ap")
+        pf_b_date = st.date_input("B 日付", key="draw_pf_bd")
+        pf_b_time = st.time_input("B 時刻", key="draw_pf_bt")
+        pf_b_price = st.number_input("B 価格", min_value=0.0, format="%.2f", key="draw_pf_bp")
+        if st.button("追加", key="draw_add"):
+            st.session_state.drawings.append({
+                "type": "pitchfork", "color": draw_color, "label": draw_label,
+                "params": {
+                    "px": datetime.datetime.combine(pf_p_date, pf_p_time).isoformat(),
+                    "py": pf_p_price,
+                    "ax": datetime.datetime.combine(pf_a_date, pf_a_time).isoformat(),
+                    "ay": pf_a_price,
+                    "bx": datetime.datetime.combine(pf_b_date, pf_b_time).isoformat(),
+                    "by": pf_b_price,
+                },
+            })
+            st.rerun()
+
+    # 登録済み描画の一覧と削除
+    if st.session_state.drawings:
+        st.markdown("**登録済み描画**")
+        type_labels = {"hline": "水平線", "trendline": "トレンド", "channel": "チャネル", "pitchfork": "PF"}
+        for i, d in enumerate(st.session_state.drawings):
             col_l, col_d = st.columns([4, 1])
+            tl = type_labels.get(d["type"], d["type"])
             col_l.markdown(
-                f"<span style='color:{hl['color']}'>━</span> "
-                f"{hl['label'] or '水平線'} @ {hl['price']:.4f}",
+                f"<span style='color:{d['color']}'>━</span> "
+                f"**{tl}** {d['label'] or ''}",
                 unsafe_allow_html=True,
             )
-            if col_d.button("✕", key=f"del_hl_{i}"):
-                st.session_state.hlines.pop(i)
-                st.rerun()
-        for i, ch in enumerate(st.session_state.channels):
-            col_l, col_d = st.columns([4, 1])
-            col_l.markdown(
-                f"<span style='color:{ch['color']}'>▬</span> "
-                f"{ch['label'] or 'チャンネル'} "
-                f"{ch['lower']:.4f} – {ch['upper']:.4f}",
-                unsafe_allow_html=True,
-            )
-            if col_d.button("✕", key=f"del_ch_{i}"):
-                st.session_state.channels.pop(i)
+            if col_d.button("X", key=f"del_draw_{i}"):
+                st.session_state.drawings.pop(i)
                 st.rerun()
 
 
@@ -430,35 +498,168 @@ if timeframe in ("1d", "1w", "1M"):
         rangebreaks=[dict(bounds=["sat", "mon"])]
     )
 
-# ── ユーザー定義ライン ──────────────────────────────────────────────────────────
-for hl in st.session_state.hlines:
-    fig.add_hline(
-        y=hl["price"],
-        line_color=hl["color"],
-        line_width=1.5,
-        line_dash="dot",
-        annotation_text=hl["label"] if hl["label"] else None,
-        annotation_position="top right",
-    )
+# ── ユーザー描画のレンダリング ────────────────────────────────────────────────────
+for d in st.session_state.drawings:
+    if d["type"] == "hline":
+        fig.add_hline(
+            y=d["params"]["price"],
+            line_color=d["color"], line_width=1.5, line_dash="dot",
+            annotation_text=d["label"] if d["label"] else None,
+            annotation_position="top right",
+        )
+    elif d["type"] == "trendline":
+        p = d["params"]
+        fig.add_trace(
+            go.Scatter(
+                x=[datetime.datetime.fromisoformat(p["x0"]),
+                   datetime.datetime.fromisoformat(p["x1"])],
+                y=[p["y0"], p["y1"]],
+                mode="lines",
+                line=dict(color=d["color"], width=1.5),
+                name=d["label"] or "トレンドライン",
+                showlegend=False,
+            ),
+            row=1, col=1,
+        )
+    elif d["type"] == "channel":
+        p = d["params"]
+        fig.add_hrect(
+            y0=p["lower"], y1=p["upper"],
+            fillcolor=d["color"], opacity=0.08, line_width=0,
+        )
+        fig.add_hline(
+            y=p["upper"], line_color=d["color"], line_width=1, line_dash="dash",
+            annotation_text=(d["label"] + " 上限") if d["label"] else None,
+            annotation_position="top right",
+        )
+        fig.add_hline(
+            y=p["lower"], line_color=d["color"], line_width=1, line_dash="dash",
+            annotation_text=(d["label"] + " 下限") if d["label"] else None,
+            annotation_position="bottom right",
+        )
+    elif d["type"] == "pitchfork":
+        p = d["params"]
+        px_dt = datetime.datetime.fromisoformat(p["px"])
+        ax_dt = datetime.datetime.fromisoformat(p["ax"])
+        bx_dt = datetime.datetime.fromisoformat(p["bx"])
+        py_, ay_, by_ = p["py"], p["ay"], p["by"]
 
-for ch in st.session_state.channels:
-    fig.add_hrect(
-        y0=ch["lower"], y1=ch["upper"],
-        fillcolor=ch["color"], opacity=0.08, line_width=0,
-    )
-    fig.add_hline(
-        y=ch["upper"], line_color=ch["color"], line_width=1, line_dash="dash",
-        annotation_text=(ch["label"] + " 上限") if ch["label"] else None,
-        annotation_position="top right",
-    )
-    fig.add_hline(
-        y=ch["lower"], line_color=ch["color"], line_width=1, line_dash="dash",
-        annotation_text=(ch["label"] + " 下限") if ch["label"] else None,
-        annotation_position="bottom right",
-    )
+        # 中点M = A,Bの中点
+        mx_ts = ax_dt.timestamp() + (bx_dt.timestamp() - ax_dt.timestamp()) / 2
+        mx_dt = datetime.datetime.fromtimestamp(mx_ts)
+        my_ = (ay_ + by_) / 2
+
+        # 中央線の傾きを使って延長（表示範囲の右端まで）
+        dx_sec = mx_dt.timestamp() - px_dt.timestamp()
+        dy = my_ - py_
+        if dx_sec != 0:
+            # 中央線をチャート右端まで延長
+            last_ts = df.index[-1].timestamp()
+            extend_sec = last_ts - px_dt.timestamp()
+            slope = dy / dx_sec
+            end_y_median = py_ + slope * extend_sec
+            end_dt = datetime.datetime.fromtimestamp(last_ts)
+
+            # 中央線: P → 延長点
+            fig.add_trace(
+                go.Scatter(
+                    x=[px_dt, end_dt], y=[py_, end_y_median],
+                    mode="lines", line=dict(color=d["color"], width=1.5),
+                    name=d["label"] or "PF中央線", showlegend=False,
+                ),
+                row=1, col=1,
+            )
+            # 上プロング: Aを通り中央線に平行
+            end_y_upper = ay_ + slope * (last_ts - ax_dt.timestamp())
+            fig.add_trace(
+                go.Scatter(
+                    x=[ax_dt, end_dt], y=[ay_, end_y_upper],
+                    mode="lines", line=dict(color=d["color"], width=1, dash="dash"),
+                    name="PF上", showlegend=False,
+                ),
+                row=1, col=1,
+            )
+            # 下プロング: Bを通り中央線に平行
+            end_y_lower = by_ + slope * (last_ts - bx_dt.timestamp())
+            fig.add_trace(
+                go.Scatter(
+                    x=[bx_dt, end_dt], y=[by_, end_y_lower],
+                    mode="lines", line=dict(color=d["color"], width=1, dash="dash"),
+                    name="PF下", showlegend=False,
+                ),
+                row=1, col=1,
+            )
 
 st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 st.caption(f"データ最終時刻: {df.index[-1].strftime('%Y-%m-%d %H:%M UTC')}")
+
+
+# ─── 参照アセットセクション ──────────────────────────────────────────────────────
+if ref_selected:
+    ref_tabs = st.tabs(ref_selected)
+    for tab, name in zip(ref_tabs, ref_selected):
+        with tab:
+            asset_info = REFERENCE_ASSETS[name]
+            try:
+                df_ref = get_reference_data(asset_info["symbol"], ref_period)
+            except Exception as e:
+                st.warning(f"{name} のデータ取得に失敗しました: {e}")
+                continue
+
+            if df_ref.empty:
+                st.warning(f"{name} のデータがありません（市場休場中の可能性）")
+                continue
+
+            # メトリクス
+            ref_current = df_ref["close"].iloc[-1]
+            ref_prev = df_ref["close"].iloc[-2] if len(df_ref) >= 2 else ref_current
+            ref_change = (ref_current - ref_prev) / ref_prev * 100
+            currency_sym = "\u00a5" if asset_info["currency"] == "JPY" else "$"
+
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric(f"{name} 現在価格", f"{currency_sym}{ref_current:,.2f}")
+            rc2.metric("前日比", f"{ref_change:+.2f}%")
+            rc3.metric("データ最終", df_ref.index[-1].strftime("%Y-%m-%d"))
+
+            # ローソク足 + 出来高チャート
+            fig_ref = make_subplots(
+                rows=2, cols=1, shared_xaxes=True,
+                vertical_spacing=0.05, row_heights=[0.75, 0.25],
+                subplot_titles=[name, "Volume"],
+            )
+            fig_ref.add_trace(
+                go.Candlestick(
+                    x=df_ref.index,
+                    open=df_ref["open"], high=df_ref["high"],
+                    low=df_ref["low"], close=df_ref["close"],
+                    name=name,
+                    increasing_line_color="#26a69a",
+                    decreasing_line_color="#ef5350",
+                ),
+                row=1, col=1,
+            )
+            ref_vol_colors = [
+                "#26a69a" if c >= o else "#ef5350"
+                for o, c in zip(df_ref["open"], df_ref["close"])
+            ]
+            fig_ref.add_trace(
+                go.Bar(x=df_ref.index, y=df_ref["volume"],
+                       marker_color=ref_vol_colors,
+                       name="Volume", showlegend=False),
+                row=2, col=1,
+            )
+            fig_ref.update_layout(
+                height=450,
+                template="plotly_dark",
+                xaxis_rangeslider_visible=False,
+                hovermode="x unified",
+                legend=dict(orientation="h", y=1.02, x=0),
+                margin=dict(l=60, r=40, t=60, b=40),
+            )
+            fig_ref.update_xaxes(
+                rangebreaks=[dict(bounds=["sat", "mon"])]
+            )
+            st.plotly_chart(fig_ref, use_container_width=True, config=PLOTLY_CONFIG)
 
 
 # ─── メイヤーマルチプルセクション ────────────────────────────────────────────────

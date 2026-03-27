@@ -8,6 +8,7 @@ import datetime
 import requests
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from dateutil.relativedelta import relativedelta
 from finta import TA
 
@@ -54,28 +55,32 @@ def fetch_ohlcv_since_year(symbol: str, timeframe: str, start_year: int) -> pd.D
     return df
 
 
-def get_usdjpy_rate() -> float:
-    """Yahoo Finance APIからUSD/JPYレートを取得する"""
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/JPY=X"
-    params = {"range": "1d", "interval": "1m"}
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/91.0.4472.124 Safari/537.36"
-        )
-    }
+def fetch_yahoo_ohlcv(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
+    """Yahoo FinanceからOHLCVデータを取得し、小文字カラム名のDataFrameで返す"""
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        meta = data["chart"]["result"][0]["meta"]
-        price = meta.get("regularMarketPrice")
-        if price is None:
-            quotes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-            valid = [q for q in quotes if q is not None]
-            price = valid[-1] if valid else None
-        return round(price, 3) if price else None
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval=interval)
+        if df.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        df = df.rename(columns=str.lower)
+        # yfinanceが返す余分な列(dividends, stock splits)を削除
+        keep_cols = ["open", "high", "low", "close", "volume"]
+        df = df[[c for c in keep_cols if c in df.columns]]
+        df.index.name = "timestamp"
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+
+def get_usdjpy_rate() -> float:
+    """yfinanceからUSD/JPYの最新レートを取得する"""
+    try:
+        ticker = yf.Ticker("JPY=X")
+        data = ticker.history(period="1d", interval="1m")
+        if data.empty:
+            return None
+        price = data["Close"].dropna().iloc[-1]
+        return round(float(price), 3)
     except Exception:
         return None
 
